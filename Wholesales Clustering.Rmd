@@ -1,0 +1,237 @@
+---
+title: "Clustering Analysis on Wholesale Customer Data"
+subtitle: "MSBA 6130 Homework 1"
+author: "Rebecca Meyer, Narae Kang, Shubham Garg, Pranvi Setia, Yun-Chien Yen"
+date: "7/6/2022"
+output: pdf_document
+---
+
+```{r setup, global_options, include=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo = TRUE, tidy.opts=list(width.cutoff=40), tidy=TRUE)
+```
+# Introduction to Wholesale Customer Data
+
+The wholesale customer data was provided by Professor Mochen Yang in his MSBA 6130 course, Introduction to Data Analytics in R, Carlson management of School, University of Minnesota. The data contains information on the clients of Company XYZ. For each client, information is provided on their channels, regions, and annual spendings across six product categories.
+
+For the Channel column, 1 means Horeca (Hotel/Restaurant/Cafe) and 2 means Retail. For the Region column, 1 means Lisbon, 2 means Oporto, and 3 means other regions. The six product categories are fresh products, milk products, grocery products, frozen products, detergent and paper products, and delicatessen products.
+
+Company XYZ hired us to analyze this data to gain a better understanding of their client spending patterns and use this information to more effiecently meet clients' demand.To help Company XYZ accomplish this goal, we decidied to employ the exploratory analysis technique of clustering analysis.
+
+# Dataset observation
+## Loading Packages and Data
+
+Our analysis was preformed in Jupyter Lab - RStudio. The packages needed to preform the following analysis are shown below. 
+
+```{r message=FALSE}
+library(dplyr)
+library(cluster)
+library(cluster.datasets)
+library(stats)
+library(ggplot2)
+library(GGally)
+library(gridExtra)
+library(corrplot)
+library(RSNNS)
+library(psych)
+library(data.table)
+library(factoextra)
+```
+
+We then uploaded the data using the read.csv() function. 
+
+```{r}
+XYZ_clients <- read.csv("Wholesale customers data.csv")
+```
+
+## Exploratory Data Analysis
+
+We explored the dataset first to get a preliminary understanding of trends. 
+We used the glimpse function as a starting point.
+
+```{r}
+glimpse(XYZ_clients)
+```
+
+We found the mean annual spending for each product category in each channel and region.
+
+```{r}
+#by channel
+XYZ_clients %>% 
+  group_by(Channel) %>%
+  summarise(avg_Fresh = mean(Fresh), avg_milk = mean(Milk), 
+         avg_grocery = mean(Grocery), avg_frozen = mean(Frozen),
+         avg_paper = mean(Detergents_Paper), avg_del = mean(Delicatessen))
+```
+
+We can see that clients in the Horeca (Channel=1) buy 1.5 times more fresh than retail (Channel=2). While clients in retail channel buy more milk (3 times), grocery(4 times), and especially paper products (9 times).
+
+```{r}
+#by region
+XYZ_clients %>% 
+  group_by(Region) %>%
+  summarise(avg_Fresh = mean(Fresh), avg_milk = mean(Milk), 
+            avg_grocery = mean(Grocery), avg_frozen = mean(Frozen),
+            avg_paper = mean(Detergents_Paper), avg_del = mean(Delicatessen))
+```
+
+Here we can see the clients in Lisbon (Region=1) tend to spend an average amount within all categories compared to other regions(Region=2,3). Clients in Oporto(Region=2) tend to spend more on grocery, frozen, and paper products. We can also see that clients in other regions(Region=3) buy the most fresh products than any other categories.
+
+Also, we looked at the correlation matrix for spending patterns.
+
+```{r}
+# correlation matrix
+corrmatrix <- cor(XYZ_clients[,3:8])
+corrplot(corrmatrix, method = 'number')
+```
+
+Then, we used ggpairs and ggplot to visualize product categories in scatter plots and box plots. 
+
+```{r}
+XYZ_clients$Region <- as.factor(XYZ_clients$Region) 
+XYZ_clients$Channel <- as.factor(XYZ_clients$Channel)
+summary(XYZ_clients)
+ggpairs(XYZ_clients[,3:8])
+```
+```{r}
+#boxplot
+b1 <- ggplot(XYZ_clients, aes(x = Region, y = Fresh, fill = Channel)) + 
+geom_boxplot() + theme_grey() + ggtitle("Fresh's boxplot") + theme(legend.position = "none") 
+b2 <- ggplot(XYZ_clients, aes(x = Region, y = Milk, fill = Channel)) + 
+geom_boxplot() + theme_grey() + ggtitle("Milk's boxplot") + theme(legend.position = "none") 
+b3 <- ggplot(XYZ_clients, aes(x = Region, y = Grocery, fill = Channel)) + 
+geom_boxplot() + theme_grey() + ggtitle("Grocery's boxplot") + theme(legend.position = "none") 
+b4 <- ggplot(XYZ_clients, aes(x = Region, y = Frozen, fill = Channel)) + 
+geom_boxplot() + theme_grey() + ggtitle("Frozen's boxplot") + theme(legend.position = "none") 
+b5 <- ggplot(XYZ_clients, aes(x = Region, y = Detergents_Paper, fill = Channel)) +
+geom_boxplot() + theme_grey() + ggtitle("Deter_Paper's boxplot") + theme(legend.position = "none") 
+b6 <- ggplot(XYZ_clients, aes(x = Region, y = Delicatessen, fill = Channel)) + 
+geom_boxplot() + theme_grey() + ggtitle("Delicassen's boxplot") + theme(legend.position = "none") 
+grid.arrange(b1, b2, b3, b4, b5, b6, nrow=3)
+
+```
+
+From the above visualization, we can see that in other regions (Region = 3) we have more clients and more outliers.
+
+# Cluster Analysis
+## Normalization of Wholesale Customer Data
+
+In order to make sure all attributes of data are from the same range, we normalized it based on the below table. 
+
+```{r}
+#total
+describe(XYZ_clients)
+```
+
+We created a function called normalize and mutated each attribute value using that function.
+
+```{r}
+normalize = function(x){
+  return ((x - min(x))/(max(x) - min(x)))}
+
+XYZ_clients_norm = XYZ_clients %>% 
+  mutate_at(c(3:8), normalize)
+```
+
+# Clustering Method
+
+## Choosing the Number of Clusters
+
+To find the best number of clusters for the wholesale customer data, we created the SSE Curve to find the elbow point which shows the optimal number of clusters.
+
+```{r}
+SSE_curve <- c()
+for (n in 1:10) {
+  kcluster = kmeans(XYZ_clients_norm[,3:8], n)
+  sse = kcluster$tot.withinss
+  SSE_curve[n] = sse}
+plot(1:10, SSE_curve, type = "b", 
+     main = "SSE Curve", 
+     xlab = "Number of Clusters", ylab = "SSE",
+     col = 'blue')
+
+```
+
+According to SSE Curve, we chose 3 clusters as the SSE curve decreases smoothly after k = 3.
+
+## K-Means Cluster Analysis
+
+We used the kmeans() function to find the cluster groupings for clients based on their spending pattern in different categories. We then added those groupings to the XYZ clients data and found the cluster centers.
+
+```{r}
+kcluster = kmeans(XYZ_clients_norm[,3:8], centers = 3)
+XYZ_clients_norm$cluster <- kcluster$cluster
+clusplot(XYZ_clients_norm[,3:8], kcluster$cluster, color = T, shade = F,
+         labels=0, lines=0, main = 'K-Means Cluster Analysis')
+```
+
+We looked at the centers of the clusters formed above.
+
+```{r}
+kcluster$centers
+```
+
+We then found the demographics (region and channel) of the clients in each group and plotted this information on box plots for a visual representation.
+
+```{r}
+## Distribution and sample counts in each cluster
+XYZ_clients_k <- XYZ_clients_norm %>% group_by(cluster) %>% 
+                 count(Channel, Region)
+as.data.frame(XYZ_clients_k)
+
+# box plots of 6 product categories after clustering
+XYZ <- XYZ_clients_norm  %>% select(-c("Channel", "Region"))
+XYZ  %>% mutate(Cluster = as.factor(kcluster$cluster))  %>%
+      ggplot(aes(y = Fresh, x = Cluster)) + geom_boxplot() + scale_fill_brewer(palette="Dark2")-> b1
+XYZ  %>% mutate(Cluster = as.factor(kcluster$cluster))  %>% 
+      ggplot(aes(y = Milk, x = Cluster)) + geom_boxplot() -> b2
+XYZ  %>% mutate(Cluster = as.factor(kcluster$cluster))  %>% 
+      ggplot(aes(y = Grocery, x = Cluster)) + geom_boxplot() -> b3
+XYZ  %>% mutate(Cluster = as.factor(kcluster$cluster))  %>% 
+      ggplot(aes(y = Frozen, x = Cluster)) + geom_boxplot() -> b4
+XYZ  %>% mutate(Cluster = as.factor(kcluster$cluster))  %>% 
+      ggplot(aes(y = Detergents_Paper, x = Cluster)) + geom_boxplot() -> b5
+XYZ  %>% mutate(Cluster = as.factor(kcluster$cluster))  %>% 
+      ggplot(aes(y = Delicatessen, x = Cluster)) + geom_boxplot() -> b6
+
+grid.arrange(b1, b2, b3, b4, b5, b6, nrow=2)
+
+```
+
+To get a better understanding of the distribution of the channels and regions across the different clusters, we used ggplot to create two bar charts. The first bar chart shows the distribution of channel type across the clusters. The second bar chart shows the distribution of region across the clusters.
+
+```{r}
+channel <- 
+  ggplot(XYZ_clients_norm %>% group_by(cluster, Channel) %>% count(), 
+       aes(fill=as.factor(Channel), y=n, x=cluster)) +
+  geom_bar(position = "dodge2", stat = "identity") +
+  ggtitle('XYZ K-Means Cluster Demographics - By Channel') +
+  xlab('Cluster') +
+  ylab('Number of Clients')+
+  scale_fill_discrete(name = "Channel")
+```
+
+```{r}
+region <- 
+  ggplot(XYZ_clients_norm %>% group_by(cluster, Region) %>% count(), 
+       aes(fill=as.factor(Region), y=n, x=cluster)) +
+  geom_bar(position = "dodge2", stat = "identity") +
+  ggtitle('XYZ K-Means Cluster Demographics - By Region') +
+  xlab('Cluster') +
+  ylab('Number of Clients') +
+  scale_fill_discrete(name = "Region")
+
+grid.arrange(channel, region, ncol=2)
+```
+
+We can see that one cluster only contains clients from channel 2. We can also see that the other two clusters contain a majority of clients from channel 1.
+
+## Data Evaluation
+
+Lastly, we evaluated our K-means clustering results with the silhouette coefficient. We used the silhouette() function with our cluster groups and the distance matrix. The summary can be seen below.
+
+```{r}
+XYZ_clients_norm_distance_matrix = dist(XYZ_clients_norm[,3:8], method = "euclidean")
+sc_k = silhouette(XYZ_clients_norm$cluster, dist = XYZ_clients_norm_distance_matrix)
+summary(sc_k)
+```
